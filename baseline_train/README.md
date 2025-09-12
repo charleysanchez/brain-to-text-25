@@ -1,0 +1,3 @@
+# Baseline Model Training
+
+All files in this directory are adapted from [Neuroprosthetics-Lab/nejm-brain-to-text](https://github.com/Neuroprosthetics-Lab/nejm-brain-to-text/tree/main) repository, who authored the original data and baseline model. See their README 'model_training' here for the details of each file: [README](https://github.com/Neuroprosthetics-Lab/nejm-brain-to-text/blob/main/model_training/README.md).

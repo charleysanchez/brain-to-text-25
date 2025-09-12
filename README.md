@@ -1,2 +1,5 @@
 # brain-to-text-25
-https://www.kaggle.com/competitions/brain-to-text-25/ brain-to-text-25 kaggle competition repo
+
+This repository acts as my basecamp for competing in Kaggle's brain-to-text-25 competition: [competition-link](git@github.com:charleysanchez/brain-to-text-25.git)
+
+I will be competing as the solo author of this code.

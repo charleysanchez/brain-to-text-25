@@ -1,4 +1,4 @@
-experiment_name: baseline_rnn
+experiment_name: temporal_masked_rnn
 
 model:
   n_input_features: 512 # number of input features in the neural data. (2 features per electrode, 256 electrodes)

@@ -70,6 +70,7 @@ dataset:
     smooth_kernel_size: 100 # size of the smoothing kernel applied to the data
     smooth_data: true # whether to smooth the data
     smooth_kernel_std: 2 # standard deviation of the smoothing kernel applied to the data
+    temporal_masking: True # turns on temporal masking of the data
 
   neural_dim: 512 # dimensionality of the neural data
   batch_size: 64 # batch size for training

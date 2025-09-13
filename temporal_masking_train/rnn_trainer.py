@@ -12,7 +12,7 @@ import sys
 import json
 import pickle
 
-from dataset import BrainToTextDataset, train_test_split_indicies
+from dataset import BrainToTextDataset, train_test_split_indices
 from data_augmentations import gauss_smooth, temporal_masking_batched
 
 import torchaudio.functional as F # for edit distance
@@ -160,13 +160,13 @@ class BrainToTextDecoder_Trainer:
             raise ValueError("There are duplicate sessions listed in the val dataset")
 
         # Split trials into train and test sets
-        train_trials, _ = train_test_split_indicies(
+        train_trials, _ = train_test_split_indices(
             file_paths = train_file_paths, 
             test_percentage = 0,
             seed = self.args['dataset']['seed'],
             bad_trials_dict = None,
             )
-        _, val_trials = train_test_split_indicies(
+        _, val_trials = train_test_split_indices(
             file_paths = val_file_paths, 
             test_percentage = 1,
             seed = self.args['dataset']['seed'],
@@ -185,7 +185,7 @@ class BrainToTextDecoder_Trainer:
             
         # train dataset and dataloader
         self.train_dataset = BrainToTextDataset(
-            trial_indicies = train_trials,
+            trial_indices = train_trials,
             split = 'train',
             days_per_batch = self.args['dataset']['days_per_batch'],
             n_batches = self.args['num_training_batches'],
@@ -204,7 +204,7 @@ class BrainToTextDecoder_Trainer:
 
         # val dataset and dataloader
         self.val_dataset = BrainToTextDataset(
-            trial_indicies = val_trials, 
+            trial_indices = val_trials, 
             split = 'test',
             days_per_batch = None,
             n_batches = None,
@@ -530,7 +530,7 @@ class BrainToTextDecoder_Trainer:
             labels = batch['seq_class_ids'].to(self.device)
             n_time_steps = batch['n_time_steps'].to(self.device)
             phone_seq_lens = batch['phone_seq_lens'].to(self.device)
-            day_indicies = batch['day_indicies'].to(self.device)
+            day_indices = batch['day_indices'].to(self.device)
 
             # Use autocast for efficiency
             with torch.autocast(device_type = "cuda", enabled = self.args['use_amp'], dtype = torch.bfloat16):
@@ -541,7 +541,7 @@ class BrainToTextDecoder_Trainer:
                 adjusted_lens = ((n_time_steps - self.args['model']['patch_size']) / self.args['model']['patch_stride'] + 1).to(torch.int32)
 
                 # Get phoneme predictions 
-                logits = self.model(features, day_indicies)
+                logits = self.model(features, day_indices)
 
                 # Calculate CTC Loss
                 loss = self.ctc_loss(
@@ -682,7 +682,7 @@ class BrainToTextDecoder_Trainer:
         metrics['losses'] = []
         metrics['block_nums'] = []
         metrics['trial_nums'] = []
-        metrics['day_indicies'] = []
+        metrics['day_indices'] = []
 
         total_edit_distance = 0
         total_seq_length = 0
@@ -699,10 +699,10 @@ class BrainToTextDecoder_Trainer:
             labels = batch['seq_class_ids'].to(self.device)
             n_time_steps = batch['n_time_steps'].to(self.device)
             phone_seq_lens = batch['phone_seq_lens'].to(self.device)
-            day_indicies = batch['day_indicies'].to(self.device)
+            day_indices = batch['day_indices'].to(self.device)
 
             # Determine if we should perform validation on this batch
-            day = day_indicies[0].item()
+            day = day_indices[0].item()
             if self.args['dataset']['dataset_probability_val'][day] == 0: 
                 if self.args['log_val_skip_logs']:
                     self.logger.info(f"Skipping validation on day {day}")
@@ -715,7 +715,7 @@ class BrainToTextDecoder_Trainer:
 
                     adjusted_lens = ((n_time_steps - self.args['model']['patch_size']) / self.args['model']['patch_stride'] + 1).to(torch.int32)
 
-                    logits = self.model(features, day_indicies)
+                    logits = self.model(features, day_indices)
     
                     loss = self.ctc_loss(
                         torch.permute(logits.log_softmax(2), [1, 0, 2]),
@@ -744,7 +744,7 @@ class BrainToTextDecoder_Trainer:
 
                     decoded_seqs.append(decoded_seq)
 
-            day = batch['day_indicies'][0].item()
+            day = batch['day_indices'][0].item()
                 
             day_per[day]['total_edit_distance'] += batch_edit_distance
             day_per[day]['total_seq_length'] += torch.sum(phone_seq_lens).item()
@@ -768,7 +768,7 @@ class BrainToTextDecoder_Trainer:
             metrics['losses'].append(loss.detach().item())
             metrics['block_nums'].append(batch['block_nums'].numpy())
             metrics['trial_nums'].append(batch['trial_nums'].numpy())
-            metrics['day_indicies'].append(batch['day_indicies'].cpu().numpy())
+            metrics['day_indices'].append(batch['day_indices'].cpu().numpy())
 
         avg_PER = total_edit_distance / total_seq_length
 

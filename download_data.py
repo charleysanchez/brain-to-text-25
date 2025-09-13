@@ -34,6 +34,60 @@ def display_progress_bar(block_num, block_size, total_size, message=""):
     sys.stdout.flush()
 
 
+# top: pip install requests
+import time, requests
+from requests.adapters import HTTPAdapter, Retry
+
+CHUNK = 8 * 1024 * 1024  # 8 MiB
+PRINT_EVERY_BYTES = 100 * 1024 * 1024  # 100 MiB
+
+def download_with_resume(url, dest, expected_size=None, max_retries=8):
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    s = requests.Session()
+    retries = Retry(total=max_retries, backoff_factor=1.5,
+                    status_forcelist=[429,500,502,503,504],
+                    allowed_methods=["GET","HEAD"])
+    s.mount("http://", HTTPAdapter(max_retries=retries))
+    s.mount("https://", HTTPAdapter(max_retries=retries))
+
+    existing = os.path.getsize(dest) if os.path.exists(dest) else 0
+    head = s.head(url, timeout=30)
+    head.raise_for_status()
+    total = int(head.headers.get("Content-Length", expected_size or 0)) or None
+    supports_range = head.headers.get("Accept-Ranges","").lower() == "bytes"
+
+    headers = {"Range": f"bytes={existing}-"} if (supports_range and existing) else {}
+    mode = "ab" if headers else "wb"
+    downloaded = existing
+    last_print = existing
+
+    with s.get(url, headers=headers, stream=True, timeout=60) as r, open(dest, mode) as f:
+        if headers and r.status_code == 200:
+            # server ignored Range; restart
+            f.close()
+            os.remove(dest)
+            return download_with_resume(url, dest, expected_size, max_retries)
+        r.raise_for_status()
+        start = time.time()
+        for chunk in r.iter_content(chunk_size=CHUNK):
+            if not chunk:
+                continue
+            f.write(chunk)
+            downloaded += len(chunk)
+            if downloaded - last_print >= PRINT_EVERY_BYTES or (time.time()-start) > 1.0:
+                if total:
+                    pct = 100.0 * downloaded / total
+                    print(f"\rDownloading {os.path.basename(dest)}: {downloaded/1e6:.1f} / {total/1e6:.1f} MB ({pct:.1f}%)", end="")
+                else:
+                    print(f"\rDownloading {os.path.basename(dest)}: {downloaded/1e6:.1f} MB", end="")
+                last_print = downloaded
+                start = time.time()
+    print()
+    if total and downloaded != total:
+        raise IOError(f"Download incomplete: got {downloaded} of {total} bytes")
+
+
+
 ########################################################################################
 #
 # Main function.
@@ -88,13 +142,7 @@ def main():
 
         download_to_filepath = os.path.join(data_dirpath, filename)
 
-        urllib.request.urlretrieve(
-            download_url,
-            download_to_filepath,
-            reporthook=lambda *args: display_progress_bar(
-                *args, message=f"Downloading {filename}"
-            ),
-        )
+        download_with_resume(download_url, download_to_filepath)
         sys.stdout.write("\n")
 
         # If this file is a zip file, unzip it into the data directory.

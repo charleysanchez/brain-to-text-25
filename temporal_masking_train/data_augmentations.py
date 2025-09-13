@@ -39,34 +39,40 @@ def gauss_smooth(inputs, device, smooth_kernel_std=2, smooth_kernel_size=100,  p
     return smoothed.permute(0, 2, 1)  # [B, T, C]
 
 
-def temporal_masking(inputs, device, num_masks=1, T=40, fill=0.0):
+def temporal_masking_batched(inputs, lengths, num_masks=(1, 2), T=40, fill=0.0):
     """
-    inputs: (time, features) tensor
+    inputs: (B, T, C) tensor
+    lengths: (B,) int tensor of valid lengths (<=T)
     T: maximum mask width
     num_masks: number of independent time masks
     """
-    # don't overwrite original data
-    masked_inputs = inputs.clone()
+    B, Tmax, C = inputs.shape
+    device = inputs.device
 
-    # find number of timestamps
-    time_length = masked_inputs.shape[0]
+    # ensure integer lengths are on device
+    lengths = lengths.to(device)
 
-    # if no data points, just return and don't waste time
-    if time_length == 0:
-        return masked_inputs
+    # loop over batch
+    for b in range(B):
+        L = int(lengths[b].item())
+        if L <= 0:
+            continue
 
-    # create num_masks number of masks
-    for _ in range(num_masks):
-        # set max_width no longer than the time length
-        max_width = min(T, time_length)
+        # width cannot exceed the valid length
+        max_w = min(T, L)
+        if max_w <= 0:
+            continue
 
-        # randomly create size of mask
-        mask_width = torch.randint(0, max_width+1, (1,), device=device).item()
+        # randomly select number of masks to create
+        k = int(torch.randint(num_masks[0], num_masks[1] + 1, (1,), device=device).item())
+        for _ in range(k):
+            # randomly create width of max
+            w = int(torch.randint(1, max_w + 1, (1,), device=device).item())
+            
+            # randomly find start index of mask
+            start = int(torch.randint(0, L - w + 1, (1,), device=device).itme())
 
-        # randomly find index of mask starting point
-        mask_start = torch.randint(0, time_length - mask_width + 1, (1,), device=device).item()
+            # update selected indices of input to masked
+            inputs[b, start:start+w, :] = fill
 
-        # fill in relative points with 0.0 (default) to obscure time points
-        masked_inputs[mask_start:mask_start + mask_width, :] = fill
-
-    return masked_inputs
+        return inputs

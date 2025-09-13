@@ -13,7 +13,7 @@ import json
 import pickle
 
 from dataset import BrainToTextDataset, train_test_split_indicies
-from data_augmentations import gauss_smooth
+from data_augmentations import gauss_smooth, temporal_masking
 
 import torchaudio.functional as F # for edit distance
 from omegaconf import OmegaConf
@@ -470,6 +470,17 @@ class BrainToTextDecoder_Trainer:
                 features = features[:, cut:, :]
                 n_time_steps = n_time_steps - cut
 
+            # apply random temporal masking
+            if self.transform_args['temporal_masking']:
+                features = temporal_masking(
+                inputs = features,
+                device = self.device,
+                num_masks = 1,
+                T = 40,
+                fill = 0.0,
+            )
+            
+
         # Apply Gaussian smoothing to data 
         # This is done in both training and validation
         if self.transform_args['smooth_data']:
@@ -480,6 +491,7 @@ class BrainToTextDecoder_Trainer:
                 smooth_kernel_size= self.transform_args['smooth_kernel_size'],
                 )
             
+
         
         return features, n_time_steps
 

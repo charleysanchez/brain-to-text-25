@@ -88,77 +88,120 @@ def update_ngram_params(
     ngramDecoder.SetOpt(decode_opts)
 
 
-# function for initializing the OPT model and tokenizer
-def build_opt(
-        model_name='facebook/opt-6.7b',
-        cache_dir=None,
-        device='cuda' if torch.cuda.is_available() else 'cpu',
-    ):
-    
-    '''
-    Load the OPT-6.7b model and tokenizer from Hugging Face.
-    We will load the model with 16-bit precision for faster inference. This requires ~13 GB of VRAM.
-    Put the model onto the GPU (if available).
-    '''
-    
-    # load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        cache_dir=cache_dir,
-        torch_dtype=torch.float16,
-    )
+from transformers import AutoModelForCausalLM, AutoTokenizer
+try:
+    from transformers import BitsAndBytesConfig
+except Exception:
+    BitsAndBytesConfig = None
+import torch
+import logging
 
-    if device != 'cpu':
-        # Move the model to the GPU
-        model = model.to(device)
+def _dtype_from_str(s: str):
+    if s == 'fp16': return torch.float16
+    if s == 'bf16': return torch.bfloat16
+    return torch.float32
 
-    # Set the model to evaluation mode
-    model.eval()
+def build_hf_lm(
+    model_name='gpt2-medium',
+    cache_dir=None,
+    load_in_4bit=False,
+    load_in_8bit=False,
+    dtype_str='bf16',
+    max_gpu_mem='9GiB',
+):
+    """
+    Load a small/medium causal LM that fits a 3080.
+    Examples:
+      - gpt2-medium / gpt2-xl (no quantization needed)
+      - facebook/opt-1.3b or opt-2.7b with 4-bit quantization
+    """
+    dtype = _dtype_from_str(dtype_str)
 
-    # ensure padding token
-    tokenizer.padding_side = "right"
-    tokenizer.pad_token = tokenizer.eos_token
+    tok = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir, use_fast=True)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    tok.padding_side = 'right'
 
-    return model, tokenizer
+    quant_cfg = None
+    if load_in_4bit or load_in_8bit:
+        if BitsAndBytesConfig is None:
+            raise RuntimeError("bitsandbytes not installed but 4/8-bit requested.")
+        quant_cfg = BitsAndBytesConfig(
+            load_in_4bit=load_in_4bit,
+            load_in_8bit=load_in_8bit,
+            bnb_4bit_quant_type="nf4" if load_in_4bit else None,
+            bnb_4bit_compute_dtype=dtype if load_in_4bit else None,
+        )
+
+    device_map = "auto" if torch.cuda.is_available() else None
+    max_memory = None
+    if device_map == "auto":
+        max_memory = {0: max_gpu_mem, "cpu": "48GiB"}  # adjust CPU if needed
+
+    try:
+        lm = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            torch_dtype=dtype if not (load_in_4bit or load_in_8bit) else None,
+            quantization_config=quant_cfg,
+            device_map=device_map,
+            max_memory=max_memory,
+        )
+    except RuntimeError as e:
+        logging.warning(f"Primary LM load failed ({e}). Retrying with tighter limits.")
+        lm = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            quantization_config=quant_cfg,
+            device_map="auto" if torch.cuda.is_available() else None,
+            max_memory={0: "8GiB", "cpu": "64GiB"} if torch.cuda.is_available() else None,
+        )
+
+    lm.eval()
+    return lm, tok
 
 
-# function for rescoring hypotheses with the GPT-2 model
+
 @torch.inference_mode()
 def rescore_with_gpt2(
-        model,
-        tokenizer,
-        device,
+    model,
+    tokenizer,
+    device,
+    hypotheses,
+    length_penalty,
+    max_ctx_len=512,    # <- use your CLI flag
+):
+    # tokenize with truncation to cap KV cache
+    enc = tokenizer(
         hypotheses,
-        length_penalty
-    ):
+        return_tensors='pt',
+        padding=True,
+        truncation=True,
+        max_length=max_ctx_len
+    )
+    enc = {k: v.to(device) for k, v in enc.items()}
 
-    # set model to evaluation mode
-    model.eval()
+    out = model(**enc)
+    # next-token prediction: shift
+    logits = out.logits[:, :-1, :]                 # (B, L-1, V)
+    labels = enc['input_ids'][:, 1:]               # (B, L-1)
+    attn   = enc['attention_mask'][:, 1:]          # (B, L-1)
 
-    inputs = tokenizer(hypotheses, return_tensors='pt', padding=True)
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+    lp = logprobs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)   # (B, L-1)
+    lp = (lp * attn).sum(dim=1)                                  # sum over tokens
+    lengths = attn.sum(dim=1)
 
-    outputs = model(**inputs)
-    # compute log-probabilities
-    log_probs = torch.nn.functional.log_softmax(outputs.logits, dim=-1)
-    log_probs = log_probs.cpu().numpy()
+    scores = lp - lengths * length_penalty
+    return scores.detach().float().cpu().numpy()
 
-    input_ids = inputs['input_ids'].cpu().numpy()
-    attention_mask = inputs['attention_mask'].cpu().numpy()
-    batch_size, seq_len, _ = log_probs.shape
 
-    scores = []
-    for i in range(batch_size):
-        n_tokens = int(attention_mask[i].sum())
-        # sum log-probs of each token given the previous context
-        score = sum(
-            log_probs[i, t-1, input_ids[i, t]]
-            for t in range(1, n_tokens)
-        )
-        scores.append(score - n_tokens * length_penalty)
+def _batched_rescore(model, tok, device, hyps, length_penalty, max_ctx_len, bs=16):
+    out = []
+    for i in range(0, len(hyps), bs):
+        out.append(rescore_with_gpt2(model, tok, device, hyps[i:i+bs], length_penalty, max_ctx_len))
+    return np.concatenate(out, axis=0)
 
-    return scores
 
 
 # function for decoding with the GPT-2 model
@@ -208,11 +251,14 @@ def gpt2_lm_decode(
 
     # get new LM scores from LLM
     try:
-        # first, try to rescore all at once
-        newLMScores = np.array(rescore_with_gpt2(model, tokenizer, device, hypotheses, length_penalty))
-
+        newLMScores = _batched_rescore(
+            model, tokenizer, device, hypotheses, length_penalty,
+            max_ctx_len=args.hf_context_len if 'args' in globals() else 512,
+            bs=16
+        )
     except Exception as e:
-        logging.error(f'Error during OPT rescore: {e}')
+        logging.error(f'Error during LM rescore: {e}')
+        newLMScores = np.zeros(len(hypotheses))
 
         try:
             # if that fails, try to rescore in batches (to avoid VRAM issues)
@@ -470,15 +516,19 @@ def main(args):
     device = torch.device(f"cuda:{gpu_number}" if torch.cuda.is_available() else "cpu")
     logging.info(f'Using device: {device}')
 
-    # initialize opt model
+    # initialize opt/neural LM
     if do_opt:
-        logging.info(f"Building opt model from {opt_cache_dir}...")
+        logging.info(f"Building HF LM '{args.hf_model_name}' from {opt_cache_dir}...")
         start_time = time.time()
-        lm, lm_tokenizer = build_opt(
+        lm, lm_tokenizer = build_hf_lm(
+            model_name=args.hf_model_name,
             cache_dir=opt_cache_dir,
-            device=device,
+            load_in_4bit=args.hf_load_in_4bit,
+            load_in_8bit=args.hf_load_in_8bit,
+            dtype_str=args.hf_dtype,
+            max_gpu_mem=args.hf_max_gpu_mem,
         )
-        logging.info(f'OPT model successfully built in {(time.time()-start_time):0.4f} seconds.')
+        logging.info(f'LM successfully built in {(time.time()-start_time):0.4f}s.')
 
     # initialize ngram decoder
     logging.info(f'Initializing language model decoder from {lm_path}...')
@@ -796,6 +846,14 @@ if __name__ == "__main__":
     parser.add_argument('--lm_path', type=str, help='Path to language model folder')
     parser.add_argument('--gpu_number', type=int, default=0, help='GPU number to use')
 
+    parser.add_argument('--hf_model_name', type=str, default='facebook/opt-2.7b')
+    parser.add_argument('--hf_load_in_4bit', action='store_true', help='load LM in 4-bit (bitsandbytes)')
+    parser.add_argument('--hf_load_in_8bit', action='store_true', help='load LM in 8-bit (bitsandbytes)')
+    parser.add_argument('--hf_dtype', type=str, default='bf16', choices=['fp16','bf16','fp32'])
+    parser.add_argument('--hf_max_gpu_mem', type=str, default='9GiB', help='per-GPU memory cap for device_map=auto')
+    parser.add_argument('--hf_context_len', type=int, default=512, help='max tokens per hypothesis (truncate)')
+
+
     parser.add_argument('--max_active', type=int, default=7000, help='max_active param for LM')
     parser.add_argument('--min_active', type=int, default=200, help='min_active param for LM')
     parser.add_argument('--beam', type=float, default=17.0, help='beam param for LM')
@@ -813,7 +871,7 @@ if __name__ == "__main__":
     parser.add_argument('--opt_cache_dir', type=str, default=None, help='path to opt cache')
     parser.add_argument('--alpha', type=float, default=0.5, help='alpha value [0-1]: Higher = more weight on OPT rescore. Lower = more weight on ngram rescore')
 
-    parser.add_argument('--redis_ip', type=str, default='192.168.150.2', help='IP of the redis stream (string)')
+    parser.add_argument('--redis_ip', type=str, default='127.0.0.1', help='IP of the redis stream (string)')
     parser.add_argument('--redis_port', type=int, default=6379, help='Port of the redis stream (int)')
     parser.add_argument('--input_stream', type=str, default="remote_lm_input", help='Input stream containing logits')
     parser.add_argument('--partial_output_stream', type=str, default="remote_lm_output_partial", help='Output stream containing partial decoded sentences')

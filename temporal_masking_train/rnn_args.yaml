@@ -73,7 +73,7 @@ dataset:
     temporal_masking: True # turns on temporal masking of the data
 
   neural_dim: 512 # dimensionality of the neural data
-  batch_size: 64 # batch size for training
+  batch_size: 16 # batch size for training
   n_classes: 41 # number of classes (phonemes) in the dataset
   max_seq_elements: 500 # maximum number of sequence elements (phonemes) for any trial
   days_per_batch: 4 # number of randomly-selected days to include in each batch

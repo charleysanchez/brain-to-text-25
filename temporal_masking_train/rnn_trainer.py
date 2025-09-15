@@ -199,7 +199,9 @@ class BrainToTextDecoder_Trainer:
             batch_size = None, # Dataset.__getitem__() already returns batches
             shuffle = self.args['dataset']['loader_shuffle'],
             num_workers = self.args['dataset']['num_dataloader_workers'],
-            pin_memory = True 
+            pin_memory = True,
+            prefetch_factor = 1,
+            persistent_workers = False
         )
 
         # val dataset and dataloader
@@ -211,14 +213,14 @@ class BrainToTextDecoder_Trainer:
             batch_size = self.args['dataset']['batch_size'],
             must_include_days = None,
             random_seed = self.args['dataset']['seed'],
-            feature_subset = feature_subset   
+            feature_subset = feature_subset,
             )
         self.val_loader = DataLoader(
             self.val_dataset,
             batch_size = None, # Dataset.__getitem__() already returns batches
             shuffle = False, 
             num_workers = 0,
-            pin_memory = True 
+            pin_memory = False # original true but ran out of memory
         )
 
         self.logger.info("Successfully initialized datasets")
@@ -526,11 +528,11 @@ class BrainToTextDecoder_Trainer:
             start_time = time.time() 
 
             # Move data to device
-            features = batch['input_features'].to(self.device)
-            labels = batch['seq_class_ids'].to(self.device)
-            n_time_steps = batch['n_time_steps'].to(self.device)
-            phone_seq_lens = batch['phone_seq_lens'].to(self.device)
-            day_indices = batch['day_indices'].to(self.device)
+            features = batch['input_features'].to(self.device, non_blocking=True)
+            labels = batch['seq_class_ids'].to(self.device, non_blocking=True)
+            n_time_steps = batch['n_time_steps'].to(self.device, non_blocking=True)
+            phone_seq_lens = batch['phone_seq_lens'].to(self.device, non_blocking=True)
+            day_indices = batch['day_indices'].to(self.device, non_blocking=True)
 
             # Use autocast for efficiency
             with torch.autocast(device_type = "cuda", enabled = self.args['use_amp'], dtype = torch.bfloat16):

@@ -70,7 +70,7 @@ def temporal_masking_batched(inputs, lengths, num_masks=(1, 2), T=40, fill=0.0):
             w = int(torch.randint(1, max_w + 1, (1,), device=device).item())
             
             # randomly find start index of mask
-            start = int(torch.randint(0, L - w + 1, (1,), device=device).itme())
+            start = int(torch.randint(0, L - w + 1, (1,), device=device).item())
 
             # update selected indices of input to masked
             inputs[b, start:start+w, :] = fill

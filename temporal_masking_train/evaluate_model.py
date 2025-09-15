@@ -14,7 +14,7 @@ from evaluate_model_helpers import *
 
 # argument parser for command line arguments
 parser = argparse.ArgumentParser(description='Evaluate a pretrained RNN model on the copy task dataset.')
-parser.add_argument('--model_path', type=str, default='../data/t15_pretrained_rnn_baseline',
+parser.add_argument('--model_path', type=str, default='trained_models/temporal_masked_rnn',
                     help='Path to the pretrained model directory (relative to the current working directory).')
 parser.add_argument('--data_dir', type=str, default='../data/hdf5_data_final',
                     help='Path to the dataset directory (relative to the current working directory).')
@@ -23,7 +23,7 @@ parser.add_argument('--eval_type', type=str, default='test', choices=['val', 'te
                          'If "test", ground truth is not available.')
 parser.add_argument('--csv_path', type=str, default='../data/t15_copyTaskData_description.csv',
                     help='Path to the CSV file with metadata about the dataset (relative to the current working directory).')
-parser.add_argument('--gpu_number', type=int, default=1,
+parser.add_argument('--gpu_number', type=int, default=0,
                     help='GPU number to use for RNN model inference. Set to -1 to use CPU.')
 args = parser.parse_args()
 

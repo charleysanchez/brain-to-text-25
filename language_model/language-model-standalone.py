@@ -9,7 +9,7 @@ import logging
 import torch
 import lm_decoder
 from functools import lru_cache
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 # set up logging
 logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s',level=logging.INFO)
@@ -102,16 +102,19 @@ def build_opt(
     '''
     
     # load tokenizer and model
+    bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4")
     tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         cache_dir=cache_dir,
+        quantization_config=bnb_cfg,
         torch_dtype=torch.float16,
     )
 
-    if device != 'cpu':
-        # Move the model to the GPU
-        model = model.to(device)
+    # unnecessary if in 4bit mode
+    # if device != 'cpu':
+    #     # Move the model to the GPU
+    #     model = model.to(device)
 
     # Set the model to evaluation mode
     model.eval()
